@@ -1,0 +1,4 @@
+bin/
+obj/
+__pycache__/
+*.8xv
