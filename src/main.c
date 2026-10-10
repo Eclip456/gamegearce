@@ -1,3 +1,4 @@
+#include <fileioc.h>
 #include <graphx.h>
 #include <keypadc.h>
 #include <stdio.h>
@@ -59,22 +60,41 @@ static void draw_list(uint8_t count, uint8_t selected)
     gfx_SwapDraw();
 }
 
-static void show_message(const char *title, const char *line1, const char *line2)
+static void show_message3(const char *title, const char *line1, const char *line2, const char *line3)
 {
     draw_header(title);
     gfx_PrintStringXY(line1, 8, 56);
     if (line2)
         gfx_PrintStringXY(line2, 8, 70);
+    if (line3)
+        gfx_PrintStringXY(line3, 8, 84);
     gfx_SetTextFGColor(COLOR_DIM);
     gfx_PrintStringXY("Press any key", 8, 228);
     gfx_SwapDraw();
     wait_key();
 }
 
+static void show_message(const char *title, const char *line1, const char *line2)
+{
+    show_message3(title, line1, line2, NULL);
+}
+
+/* Archiving can show the OS "Garbage Collect?" prompt, which needs the OS screen mode. */
+static void before_gc(void)
+{
+    gfx_End();
+}
+
+static void after_gc(void)
+{
+    gfx_Begin();
+    gfx_SetDrawBuffer();
+}
+
 static void load_game(const rom_info_t *game)
 {
-    char line1[48], line2[48];
-    uint16_t bad_page;
+    char line1[48], line2[48], line3[48];
+    rom_error_t err;
     rom_status_t status;
     uint32_t crc;
 
@@ -82,15 +102,24 @@ static void load_game(const rom_info_t *game)
     gfx_PrintStringXY("Checking ROM pages...", 8, 56);
     gfx_SwapDraw();
 
-    status = rom_load(game, rom_pages, &bad_page);
+    status = rom_load(game, rom_pages, &err);
     if (status != ROM_OK)
     {
-        sprintf(line2, "Page AppVar: %sp%02X", game->prefix, bad_page);
-        show_message(game->title,
-                     status == ROM_MISSING_PAGE ? "A ROM page is missing." :
-                     status == ROM_BAD_PAGE ? "A ROM page is damaged." :
-                     "Not enough Archive space.",
-                     line2);
+        sprintf(line2, "Page AppVar: %sp%02X (%s)", game->prefix, err.page,
+                err.archived ? "Archive" : "RAM");
+        if (status == ROM_BAD_SIZE)
+            sprintf(line3, "Size %u bytes, expected 16392", err.size);
+        else if (status == ROM_BAD_HEADER)
+            sprintf(line3, "Starts %02X %02X %02X %02X %02X %02X, size %u",
+                    err.head[0], err.head[1], err.head[2], err.head[3],
+                    err.head[4], err.head[5], err.size);
+        else
+            line3[0] = '\0';
+        show_message3(game->title,
+                      status == ROM_MISSING_PAGE ? "A ROM page is missing." :
+                      status == ROM_NO_MEMORY ? "Not enough Archive space." :
+                      "A ROM page is damaged.",
+                      line2, line3[0] ? line3 : NULL);
         return;
     }
 
@@ -114,6 +143,7 @@ int main(void)
     gfx_SetDrawBuffer();
     gfx_SetTextTransparentColor(COLOR_HILITE);
     gfx_SetTextBGColor(COLOR_HILITE);
+    ti_SetGCBehavior(before_gc, after_gc);
 
     count = rom_find_games(games, ROM_MAX_GAMES);
     if (count > 16)

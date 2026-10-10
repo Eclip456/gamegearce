@@ -58,38 +58,58 @@ uint8_t rom_find_games(rom_info_t games[], uint8_t max_games)
     return count;
 }
 
-rom_status_t rom_load(const rom_info_t *game, const uint8_t *pages[], uint16_t *bad_page)
+rom_status_t rom_load(const rom_info_t *game, const uint8_t *pages[], rom_error_t *err)
 {
     char name[9];
 
+    memset(err, 0, sizeof *err);
+
+    /*
+     * Pass 1: move every page into Archive. Archiving can trigger a garbage
+     * collect, which moves other archived variables, so no data pointers are
+     * taken until every page is already in place.
+     */
     for (uint16_t i = 0; i < game->page_count; i++)
     {
-        const uint8_t *data;
         uint8_t handle;
+        rom_status_t status = ROM_OK;
 
-        *bad_page = i;
+        err->page = i;
         page_name(name, game->prefix, (uint8_t)i);
         handle = ti_Open(name, "r");
         if (!handle)
             return ROM_MISSING_PAGE;
 
-        if (ti_GetSize(handle) != PAGE_HEADER_SIZE + ROM_PAGE_SIZE)
-        {
-            ti_Close(handle);
-            return ROM_BAD_PAGE;
-        }
+        err->size = ti_GetSize(handle);
+        err->archived = ti_IsArchived(handle);
+        if (err->size != PAGE_HEADER_SIZE + ROM_PAGE_SIZE)
+            status = ROM_BAD_SIZE;
+        else if (!err->archived && !ti_SetArchiveStatus(true, handle))
+            status = ROM_NO_MEMORY;
+        ti_Close(handle);
+        if (status != ROM_OK)
+            return status;
+    }
 
-        /* Pages must live in Archive so the pointers stay valid and RAM stays free. */
-        if (!ti_SetArchiveStatus(true, handle))
-        {
-            ti_Close(handle);
-            return ROM_NO_MEMORY;
-        }
+    /* Pass 2: nothing moves any more, so the pointers stay valid. */
+    for (uint16_t i = 0; i < game->page_count; i++)
+    {
+        const uint8_t *data;
+        uint8_t handle;
 
+        err->page = i;
+        page_name(name, game->prefix, (uint8_t)i);
+        handle = ti_Open(name, "r");
+        if (!handle)
+            return ROM_MISSING_PAGE;
+        err->size = ti_GetSize(handle);
+        err->archived = ti_IsArchived(handle);
         data = ti_GetDataPtr(handle);
         ti_Close(handle);
+
+        memcpy(err->head, data, sizeof err->head);
         if (memcmp(data, "GGPG", 4) || data[4] != (uint8_t)i || data[5] != FORMAT_VERSION)
-            return ROM_BAD_PAGE;
+            return ROM_BAD_HEADER;
         pages[i] = data + PAGE_HEADER_SIZE;
     }
     return ROM_OK;
