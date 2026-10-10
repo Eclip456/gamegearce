@@ -74,8 +74,8 @@ int main(int argc, char **argv)
     mem[5] = 0xC3; mem[6] = BDOS & 0xFF; mem[7] = BDOS >> 8;
     mem[BDOS] = 0xD3; mem[BDOS + 1] = 0x00; mem[BDOS + 2] = 0xC9;
 
-    for (int i = 0; i < 64; i++)
-        z80_rmap[i] = mem + i * 0x400;
+    for (int i = 0; i < 256; i++)
+        z80_rmap[i].p = mem + i * 0x100;
 
     z80_reset();
     z80.pc.w = 0x100;

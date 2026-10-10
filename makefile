@@ -6,8 +6,8 @@ NAME = GGCE
 DESCRIPTION = "Game Gear emulator"
 COMPRESSED = NO
 
-CFLAGS = -Wall -Wextra -Oz
-CXXFLAGS = -Wall -Wextra -Oz
+CFLAGS = -Wall -Wextra -O3
+CXXFLAGS = -Wall -Wextra -O3
 
 # ----------------------------
 

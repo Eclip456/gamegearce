@@ -30,10 +30,16 @@ typedef struct {
 extern z80_t z80;
 
 /*
- * Reads go through 64 one-kilobyte windows, which the machine points at ROM
- * pages or RAM. Writes, port reads and port writes are machine functions.
+ * Reads go through 256 windows of 256 bytes, indexed by the address's high
+ * byte, which the machine points at ROM pages or RAM. Writes, port reads and
+ * port writes are machine functions.
  */
-extern const uint8_t *z80_rmap[64];
+typedef struct {
+    const uint8_t *p;
+    uint8_t pad;                    /* 4-byte entries: the eZ80 indexes them with two adds */
+} z80_window_t;
+
+extern z80_window_t z80_rmap[256];
 void z80_mem_write(uint16_t addr, uint8_t value);
 uint8_t z80_io_read(uint16_t port);
 void z80_io_write(uint16_t port, uint8_t value);

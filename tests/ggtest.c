@@ -81,10 +81,10 @@ int main(void)
     for (int i = 0; i < 10; i++)
         gg_run_frame();
 
-    expect("frame interrupts in 10 frames", z80_rmap[48][0], 10);
-    expect("slot 2 read after bank switch", z80_rmap[48][1], 0xA3);
-    expect("RAM mirror at E000", z80_rmap[48][2], 0x5A);
-    expect("Start pressed reads bit 7 low", z80_rmap[48][3], 0x40);
+    expect("frame interrupts in 10 frames", z80_rmap[0xC0].p[0], 10);
+    expect("slot 2 read after bank switch", z80_rmap[0xC0].p[1], 0xA3);
+    expect("RAM mirror at E000", z80_rmap[0xC0].p[2], 0x5A);
+    expect("Start pressed reads bit 7 low", z80_rmap[0xC0].p[3], 0x40);
     expect("mapper slot 2 register", gg.bank[2], 3);
     expect("VDP register 1", vdp.reg[1], 0x20);
     expect("palette color 0 low byte", vdp.cram[0], 0x34);

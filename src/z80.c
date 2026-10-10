@@ -1,7 +1,7 @@
 #include "z80.h"
 
 z80_t z80;
-const uint8_t *z80_rmap[64];
+z80_window_t z80_rmap[256];
 
 #define FC 0x01
 #define FN 0x02
@@ -45,38 +45,72 @@ static const uint8_t cycles_main[256] = {
      5,10,10, 4,10,11, 7,11, 5, 6,10, 4,10, 0, 7,11,
 };
 
-/* S, Z, X, Y flags of a byte, and the same plus parity. */
-static uint8_t sz[256];
-static uint8_t szp[256];
+/*
+ * Lookup tables, filled by z80_reset. The eZ80 has no barrel shifter, so C
+ * shifts become library calls; tables and tests keep them out of hot paths.
+ */
+static uint8_t sz[256];             /* S, Z, X, Y flags of a byte */
+static uint8_t szp[256];            /* the same plus parity */
+static uint8_t op_y[256];           /* opcode bits 5-3 */
+static uint8_t op_p[256];           /* opcode bits 5-4 (register pair) */
+static uint8_t inc_flags[256];      /* flags after INC, by result (carry kept separately) */
+static uint8_t dec_flags[256];      /* flags after DEC, by result */
+static const uint8_t bit_mask[8] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80 };
 
 static int cycles_extra;            /* added by taken branches and (IX+d) */
 
 static inline uint8_t rd(uint16_t addr)
 {
-    return z80_rmap[addr >> 10][addr & 0x3FF];
+    z80_pair_t a;
+    a.w = addr;
+    return z80_rmap[a.b.h].p[a.b.l];
 }
 
 static inline uint16_t rd16(uint16_t addr)
 {
-    return rd(addr) | rd((uint16_t)(addr + 1)) << 8;
+    z80_pair_t v;
+    v.b.l = rd(addr);
+    v.b.h = rd((uint16_t)(addr + 1));
+    return v.w;
 }
 
 static inline void wr16(uint16_t addr, uint16_t value)
 {
-    z80_mem_write(addr, (uint8_t)value);
-    z80_mem_write((uint16_t)(addr + 1), value >> 8);
+    z80_pair_t v;
+    v.w = value;
+    z80_mem_write(addr, v.b.l);
+    z80_mem_write((uint16_t)(addr + 1), v.b.h);
 }
 
 static inline uint8_t fetch(void)
 {
-    return rd(PC++);
+    uint8_t v = z80_rmap[z80.pc.b.h].p[z80.pc.b.l];
+    PC++;
+    return v;
 }
 
 static inline uint16_t fetch16(void)
 {
-    uint16_t v = rd16(PC);
-    PC += 2;
-    return v;
+    z80_pair_t v;
+    v.b.l = fetch();
+    v.b.h = fetch();
+    return v.w;
+}
+
+/* High byte of a 16-bit value, without a shift. */
+static inline uint8_t hi8(uint16_t value)
+{
+    z80_pair_t v;
+    v.w = value;
+    return v.b.h;
+}
+
+static inline uint16_t make16(uint8_t h, uint8_t l)
+{
+    z80_pair_t v;
+    v.b.h = h;
+    v.b.l = l;
+    return v.w;
 }
 
 static inline void push(uint16_t v)
@@ -101,29 +135,32 @@ static inline void bump_r(void)
 
 static void alu(uint8_t which, uint8_t v)
 {
-    unsigned a = A, r;
+    uint8_t a = A, r8;
+    uint16_t r;
 
     switch (which)
     {
     case 0: /* ADD */
     case 1: /* ADC */
-        r = a + v + (which == 1 ? (F & FC) : 0);
-        F = sz[r & 0xFF] | ((a ^ v ^ r) & FH) | (r >> 8 & FC) |
-            ((~(a ^ v) & (a ^ r) & 0x80) >> 5);
-        A = (uint8_t)r;
+        r = (uint16_t)(a + v + (which == 1 ? (F & FC) : 0));
+        r8 = (uint8_t)r;
+        F = sz[r8] | ((a ^ v ^ r8) & FH) | (r > 0xFF ? FC : 0) |
+            ((~(a ^ v) & (a ^ r8) & 0x80) ? FV : 0);
+        A = r8;
         break;
     case 2: /* SUB */
     case 3: /* SBC */
     case 7: /* CP */
-        r = a - v - (which == 3 ? (F & FC) : 0);
-        F = (sz[r & 0xFF] & ~(FX | FY)) | FN | ((a ^ v ^ r) & FH) | (r >> 8 & FC) |
-            (((a ^ v) & (a ^ r) & 0x80) >> 5);
+        r = (uint16_t)(a - v - (which == 3 ? (F & FC) : 0));
+        r8 = (uint8_t)r;
+        F = (sz[r8] & ~(FX | FY)) | FN | ((a ^ v ^ r8) & FH) | (r > 0xFF ? FC : 0) |
+            (((a ^ v) & (a ^ r8) & 0x80) ? FV : 0);
         if (which == 7)
             F |= v & (FX | FY);
         else
         {
-            F |= r & (FX | FY);
-            A = (uint8_t)r;
+            F |= r8 & (FX | FY);
+            A = r8;
         }
         break;
     case 4: /* AND */
@@ -144,39 +181,46 @@ static void alu(uint8_t which, uint8_t v)
 static uint8_t inc8(uint8_t v)
 {
     uint8_t r = v + 1;
-    F = (F & FC) | sz[r] | ((r & 0x0F) ? 0 : FH) | (r == 0x80 ? FV : 0);
+    F = (F & FC) | inc_flags[r];
     return r;
 }
 
 static uint8_t dec8(uint8_t v)
 {
     uint8_t r = v - 1;
-    F = (F & FC) | FN | sz[r] | ((v & 0x0F) ? 0 : FH) | (v == 0x80 ? FV : 0);
+    F = (F & FC) | dec_flags[r];
     return r;
 }
 
+/*
+ * 16-bit arithmetic uses `unsigned` (24 bits on the eZ80, 32 on a PC): either
+ * way bit 16 holds the carry or borrow.
+ */
 static uint16_t add16(uint16_t a, uint16_t b)
 {
-    uint32_t r = (uint32_t)a + b;
-    F = (F & (FS | FZ | FV)) | (((a ^ b ^ r) >> 8) & FH) | (uint8_t)(r >> 16 & FC) |
-        ((r >> 8) & (FX | FY));
-    return (uint16_t)r;
+    unsigned r = (unsigned)a + b;
+    uint16_t r16 = (uint16_t)r;
+    F = (F & (FS | FZ | FV)) | (((a ^ b ^ r16) & 0x1000) ? FH : 0) | ((r & 0x10000) ? FC : 0) |
+        (hi8(r16) & (FX | FY));
+    return r16;
 }
 
 static uint16_t adc16(uint16_t a, uint16_t b)
 {
-    uint32_t r = (uint32_t)a + b + (F & FC);
-    F = ((r >> 8) & (FS | FX | FY)) | ((r & 0xFFFF) ? 0 : FZ) | (((a ^ b ^ r) >> 8) & FH) |
-        ((~(a ^ b) & (a ^ r) & 0x8000) >> 13) | (uint8_t)(r >> 16 & FC);
-    return (uint16_t)r;
+    unsigned r = (unsigned)a + b + (F & FC);
+    uint16_t r16 = (uint16_t)r;
+    F = (hi8(r16) & (FS | FX | FY)) | (r16 ? 0 : FZ) | (((a ^ b ^ r16) & 0x1000) ? FH : 0) |
+        ((~(a ^ b) & (a ^ r16) & 0x8000) ? FV : 0) | ((r & 0x10000) ? FC : 0);
+    return r16;
 }
 
 static uint16_t sbc16(uint16_t a, uint16_t b)
 {
-    uint32_t r = (uint32_t)a - b - (F & FC);
-    F = FN | ((r >> 8) & (FS | FX | FY)) | ((r & 0xFFFF) ? 0 : FZ) | (((a ^ b ^ r) >> 8) & FH) |
-        (((a ^ b) & (a ^ r) & 0x8000) >> 13) | (uint8_t)(r >> 16 & FC);
-    return (uint16_t)r;
+    unsigned r = (unsigned)a - b - (F & FC);
+    uint16_t r16 = (uint16_t)r;
+    F = FN | (hi8(r16) & (FS | FX | FY)) | (r16 ? 0 : FZ) | (((a ^ b ^ r16) & 0x1000) ? FH : 0) |
+        (((a ^ b) & (a ^ r16) & 0x8000) ? FV : 0) | ((r & 0x10000) ? FC : 0);
+    return r16;
 }
 
 static void daa(void)
@@ -210,13 +254,13 @@ static uint8_t rot(uint8_t which, uint8_t v)
 
     switch (which)
     {
-    case 0: c = v >> 7; r = (v << 1) | c; break;
-    case 1: c = v & 1; r = (v >> 1) | (c << 7); break;
-    case 2: c = v >> 7; r = (v << 1) | (F & FC); break;
-    case 3: c = v & 1; r = (v >> 1) | ((F & FC) << 7); break;
-    case 4: c = v >> 7; r = v << 1; break;
+    case 0: c = (v & 0x80) ? 1 : 0; r = (uint8_t)(v + v) | c; break;
+    case 1: c = v & 1; r = (v >> 1) | (c ? 0x80 : 0); break;
+    case 2: c = (v & 0x80) ? 1 : 0; r = (uint8_t)(v + v) | (F & FC); break;
+    case 3: c = v & 1; r = (v >> 1) | ((F & FC) ? 0x80 : 0); break;
+    case 4: c = (v & 0x80) ? 1 : 0; r = (uint8_t)(v + v); break;
     case 5: c = v & 1; r = (v >> 1) | (v & 0x80); break;
-    case 6: c = v >> 7; r = (v << 1) | 1; break;
+    case 6: c = (v & 0x80) ? 1 : 0; r = (uint8_t)(v + v) | 1; break;
     default: c = v & 1; r = v >> 1; break;
     }
     F = szp[r] | c;
@@ -225,7 +269,7 @@ static uint8_t rot(uint8_t which, uint8_t v)
 
 static void bit(uint8_t n, uint8_t v)
 {
-    uint8_t m = v & (1 << n);
+    uint8_t m = v & bit_mask[n];
     F = (F & FC) | FH | (v & (FX | FY)) | (m ? (m & FS) : (FZ | FP));
 }
 
@@ -298,16 +342,16 @@ static bool condition(uint8_t cc)
 
 static int exec_cb(void)
 {
-    uint8_t op = fetch(), r = op & 7, y = (op >> 3) & 7, v;
+    uint8_t op = fetch(), r = op & 7, y = op_y[op], v;
 
     bump_r();
     v = r == 6 ? rd(HL) : get_reg(r, &z80.hl);
-    switch (op >> 6)
+    switch (op & 0xC0)
     {
-    case 0: v = rot(y, v); break;
-    case 1: bit(y, v); return r == 6 ? 12 : 8;
-    case 2: v &= ~(1 << y); break;
-    default: v |= 1 << y; break;
+    case 0x00: v = rot(y, v); break;
+    case 0x40: bit(y, v); return r == 6 ? 12 : 8;
+    case 0x80: v &= ~bit_mask[y]; break;
+    default: v |= bit_mask[y]; break;
     }
     if (r == 6)
     {
@@ -322,14 +366,14 @@ static int exec_cb(void)
 static int exec_index_cb(z80_pair_t *ip)
 {
     uint16_t addr = (uint16_t)(ip->w + (int8_t)fetch());
-    uint8_t op = fetch(), r = op & 7, y = (op >> 3) & 7, v = rd(addr);
+    uint8_t op = fetch(), r = op & 7, y = op_y[op], v = rd(addr);
 
-    switch (op >> 6)
+    switch (op & 0xC0)
     {
-    case 0: v = rot(y, v); break;
-    case 1: bit(y, v); return 16;
-    case 2: v &= ~(1 << y); break;
-    default: v |= 1 << y; break;
+    case 0x00: v = rot(y, v); break;
+    case 0x40: bit(y, v); return 16;
+    case 0x80: v &= ~bit_mask[y]; break;
+    default: v |= bit_mask[y]; break;
     }
     z80_mem_write(addr, v);
     if (r != 6)
@@ -351,7 +395,7 @@ static int block_op(uint8_t op)
         DE += dec ? -1 : 1;
         BC--;
         n = v + A;
-        F = (F & (FS | FZ | FC)) | (BC ? FV : 0) | (n & FX) | ((n << 4) & FY);
+        F = (F & (FS | FZ | FC)) | (BC ? FV : 0) | (n & FX) | ((n & 0x02) ? FY : 0);
         if (repeat && BC)
         {
             PC -= 2;
@@ -367,7 +411,7 @@ static int block_op(uint8_t op)
         BC--;
         F = (F & FC) | FN | (sz[r] & ~(FX | FY)) | ((A ^ v ^ r) & FH) | (BC ? FV : 0);
         n = r - ((F & FH) ? 1 : 0);
-        F |= (n & FX) | ((n << 4) & FY);
+        F |= (n & FX) | ((n & 0x02) ? FY : 0);
         if (repeat && BC && r)
         {
             PC -= 2;
@@ -399,7 +443,7 @@ static int block_op(uint8_t op)
 
 static int exec_ed(void)
 {
-    uint8_t op = fetch(), y = (op >> 3) & 7, v;
+    uint8_t op = fetch(), y = op_y[op], v;
 
     bump_r();
     if (op >= 0xA0 && op <= 0xBB && (op & 7) <= 3)
@@ -420,17 +464,17 @@ static int exec_ed(void)
         return 12;
     case 2: /* SBC/ADC HL,rr */
         if (op & 8)
-            HL = adc16(HL, *rp(y >> 1, &z80.hl));
+            HL = adc16(HL, *rp(op_p[op], &z80.hl));
         else
-            HL = sbc16(HL, *rp(y >> 1, &z80.hl));
+            HL = sbc16(HL, *rp(op_p[op], &z80.hl));
         return 15;
     case 3: /* LD (nn),rr / LD rr,(nn) */
     {
         uint16_t addr = fetch16();
         if (op & 8)
-            *rp(y >> 1, &z80.hl) = rd16(addr);
+            *rp(op_p[op], &z80.hl) = rd16(addr);
         else
-            wr16(addr, *rp(y >> 1, &z80.hl));
+            wr16(addr, *rp(op_p[op], &z80.hl));
         return 20;
     }
     case 4: /* NEG */
@@ -480,7 +524,7 @@ static int exec_ed(void)
 static int exec_main(uint8_t op, z80_pair_t *ip)
 {
     uint16_t addr, t;
-    uint8_t v, y = (op >> 3) & 7, z = op & 7;
+    uint8_t v, y = op_y[op], z = op & 7;
 
     cycles_extra = 0;
 
@@ -532,16 +576,16 @@ static int exec_main(uint8_t op, z80_pair_t *ip)
 
     /* 16-bit loads and arithmetic */
     case 0x01: case 0x11: case 0x21: case 0x31:
-        *rp(y >> 1, ip) = fetch16();
+        *rp(op_p[op], ip) = fetch16();
         break;
     case 0x03: case 0x13: case 0x23: case 0x33:
-        (*rp(y >> 1, ip))++;
+        (*rp(op_p[op], ip))++;
         break;
     case 0x0B: case 0x1B: case 0x2B: case 0x3B:
-        (*rp(y >> 1, ip))--;
+        (*rp(op_p[op], ip))--;
         break;
     case 0x09: case 0x19: case 0x29: case 0x39:
-        ip->w = add16(ip->w, *rp(y >> 1, ip));
+        ip->w = add16(ip->w, *rp(op_p[op], ip));
         break;
     case 0x02: z80_mem_write(BC, A); break;
     case 0x12: z80_mem_write(DE, A); break;
@@ -555,22 +599,22 @@ static int exec_main(uint8_t op, z80_pair_t *ip)
     /* accumulator and flag operations */
     case 0x00: break;
     case 0x07:
-        A = (A << 1) | (A >> 7);
+        A = (uint8_t)(A + A) | ((A & 0x80) ? 1 : 0);
         F = (F & (FS | FZ | FP)) | (A & (FX | FY | FC));
         break;
     case 0x0F:
         F = (F & (FS | FZ | FP)) | (A & FC);
-        A = (A >> 1) | (A << 7);
+        A = (A >> 1) | ((A & 1) ? 0x80 : 0);
         F |= A & (FX | FY);
         break;
     case 0x17:
-        v = A >> 7;
-        A = (A << 1) | (F & FC);
+        v = (A & 0x80) ? 1 : 0;
+        A = (uint8_t)(A + A) | (F & FC);
         F = (F & (FS | FZ | FP)) | (A & (FX | FY)) | v;
         break;
     case 0x1F:
         v = A & 1;
-        A = (A >> 1) | ((F & FC) << 7);
+        A = (A >> 1) | ((F & FC) ? 0x80 : 0);
         F = (F & (FS | FZ | FP)) | (A & (FX | FY)) | v;
         break;
     case 0x27: daa(); break;
@@ -582,7 +626,7 @@ static int exec_main(uint8_t op, z80_pair_t *ip)
         F = (F & (FS | FZ | FP)) | FC | (A & (FX | FY));
         break;
     case 0x3F:
-        F = ((F & (FS | FZ | FP | FC)) | ((F & FC) << 4) | (A & (FX | FY))) ^ FC;
+        F = ((F & (FS | FZ | FP | FC)) | ((F & FC) ? FH : 0) | (A & (FX | FY))) ^ FC;
         break;
 
     /* exchanges */
@@ -682,11 +726,11 @@ static int exec_main(uint8_t op, z80_pair_t *ip)
     /* I/O and interrupts */
     case 0xD3:
         v = fetch();
-        z80_io_write((uint16_t)(A << 8 | v), A);
+        z80_io_write(make16(A, v), A);
         break;
     case 0xDB:
         v = fetch();
-        A = z80_io_read((uint16_t)(A << 8 | v));
+        A = z80_io_read(make16(A, v));
         break;
     case 0xF3:
         z80.iff1 = z80.iff2 = 0;
@@ -722,7 +766,7 @@ static int interrupt(void)
     push(PC);
     if (z80.im == 2)
     {
-        PC = rd16((uint16_t)(z80.i << 8 | 0xFF));
+        PC = rd16(make16(z80.i, 0xFF));
         return 19;
     }
     PC = 0x38;
@@ -739,6 +783,10 @@ void z80_reset(void)
         p ^= p >> 1;
         sz[i] = (i & (FS | FX | FY)) | (i ? 0 : FZ);
         szp[i] = sz[i] | ((p & 1) ? 0 : FP);
+        op_y[i] = (i >> 3) & 7;
+        op_p[i] = (i >> 4) & 3;
+        inc_flags[i] = sz[i] | ((i & 0x0F) ? 0 : FH) | (i == 0x80 ? FV : 0);
+        dec_flags[i] = FN | sz[i] | ((i & 0x0F) == 0x0F ? FH : 0) | (i == 0x7F ? FV : 0);
     }
 
     z80.af.w = z80.sp.w = 0xFFFF;

@@ -21,23 +21,23 @@ static uint8_t page_index(uint8_t value)
     return (uint8_t)(page < rom_page_count ? page : page % rom_page_count);
 }
 
-/* Points the CPU's 1 KB read windows at the current banks. */
-static void map_slots(void)
+/* Points the CPU's 256-byte read windows for one 16 KB slot at its bank. */
+static void map_slot(uint8_t slot)
 {
-    const uint8_t *slot0 = rom_pages[page_index(gg.bank[0])];
-    const uint8_t *slot1 = rom_pages[page_index(gg.bank[1])];
-    const uint8_t *slot2 = (gg.ram_control & 0x08) ? cart_ram
-                                                   : rom_pages[page_index(gg.bank[2])];
+    const uint8_t *base;
+    z80_window_t *window = &z80_rmap[slot * 0x40];
+    uint8_t first = 0;
+
+    if (slot == 2 && (gg.ram_control & 0x08))
+        base = cart_ram;
+    else
+        base = rom_pages[page_index(gg.bank[slot])];
 
     /* The first 1 KB always shows page 0, so the reset and interrupt code stay put. */
-    z80_rmap[0] = rom_pages[0];
-    for (uint8_t i = 1; i < 16; i++)
-        z80_rmap[i] = slot0 + i * 0x400;
-    for (uint8_t i = 0; i < 16; i++)
-    {
-        z80_rmap[16 + i] = slot1 + i * 0x400;
-        z80_rmap[32 + i] = slot2 + i * 0x400;
-    }
+    if (slot == 0)
+        first = 4;
+    for (uint8_t i = first; i < 0x40; i++)
+        window[i].p = base + i * 0x100;
 }
 
 void z80_mem_write(uint16_t addr, uint8_t value)
@@ -48,10 +48,15 @@ void z80_mem_write(uint16_t addr, uint8_t value)
         if (addr >= 0xFFFC)
         {
             if (addr == 0xFFFC)
+            {
                 gg.ram_control = value;
+                map_slot(2);
+            }
             else
+            {
                 gg.bank[addr - 0xFFFD] = value;
-            map_slots();
+                map_slot(addr - 0xFFFD);
+            }
         }
     }
     else if (addr >= 0x8000 && (gg.ram_control & 0x08))
@@ -131,9 +136,12 @@ void gg_init(const uint8_t *const *pages, uint16_t page_count)
     gg.bank[2] = 2;
     cycle_debt = 0;
 
-    for (uint8_t i = 48; i < 64; i++)
-        z80_rmap[i] = ram + (i & 7) * 0x400;
-    map_slots();
+    for (uint16_t i = 0; i < 4; i++)
+        z80_rmap[i].p = rom_pages[0] + i * 0x100;
+    for (uint16_t i = 0xC0; i < 0x100; i++)
+        z80_rmap[i].p = ram + (i & 0x1F) * 0x100;
+    for (uint8_t slot = 0; slot < 3; slot++)
+        map_slot(slot);
 
     vdp_reset();
     z80_reset();
