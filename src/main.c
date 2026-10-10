@@ -4,6 +4,7 @@
 #include <string.h>
 #include <sys/timers.h>
 
+#include "emu.h"
 #include "rom.h"
 
 #define COLOR_BG 0x00
@@ -102,8 +103,7 @@ static void load_game(const rom_info_t *game)
         return;
     }
 
-    /* The CPU and video emulation will start here. */
-    show_message(game->title, line1, "ROM OK. Emulation core not written yet.");
+    emu_run(game, rom_pages);
 }
 
 int main(void)
