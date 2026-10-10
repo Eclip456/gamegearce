@@ -5,3 +5,5 @@ __pycache__/
 tests/zex
 tests/ggtest
 tests/rendertest
+bench/src/workload.h
+bench/cemu/run
