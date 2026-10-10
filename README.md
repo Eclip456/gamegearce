@@ -36,6 +36,10 @@ make
 The program ends up in `bin/GGCE.8xp`. Calculators on OS 5.5 or newer need a
 jailbreak such as arTIfiCE to run assembly/C programs.
 
+GGCE also needs the CE C libraries on the calculator. Send `clibs.8xg` from
+the [CE libraries releases](https://github.com/CE-Programming/libraries/releases/latest)
+once; without it GGCE stops with a "needs LibLoad" message.
+
 Converter tests:
 
 ```sh
