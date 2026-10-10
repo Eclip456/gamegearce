@@ -4,3 +4,4 @@ __pycache__/
 *.8xv
 tests/zex
 tests/ggtest
+tests/rendertest

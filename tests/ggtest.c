@@ -79,7 +79,7 @@ int main(void)
     gg_init(pages, PAGES);
     gg.buttons = GG_START;
     for (int i = 0; i < 10; i++)
-        gg_run_frame();
+        gg_run_frame(NULL, 0, 0);
 
     expect("frame interrupts in 10 frames", z80_rmap[0xC0].p[0], 10);
     expect("slot 2 read after bank switch", z80_rmap[0xC0].p[1], 0xA3);

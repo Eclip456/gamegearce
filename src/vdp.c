@@ -7,12 +7,16 @@ vdp_t vdp;
 void vdp_reset(void)
 {
     memset(&vdp, 0, sizeof vdp);
+    memset(vdp.tile_dirty, 1, sizeof vdp.tile_dirty);
+    vdp.cram_dirty = true;
 }
 
 /* Called at the start of every scanline, before the CPU runs it. */
 void vdp_start_line(uint16_t line)
 {
     vdp.line = line;
+    if (line == 0)
+        vdp.vscroll = vdp.reg[9];
 
     /* The line counter counts down on active lines and one line after. */
     if (line <= 192)
@@ -72,12 +76,16 @@ void vdp_write_data(uint8_t value)
         {
             vdp.cram[vdp.addr & 0x3E] = vdp.cram_latch;
             vdp.cram[vdp.addr & 0x3F] = value & 0x0F;
+            vdp.cram_dirty = true;
         }
         else
             vdp.cram_latch = value;
     }
     else
+    {
         vdp.vram[vdp.addr] = value;
+        vdp.tile_dirty[vdp.addr >> 5] = 1;
+    }
     vdp.read_buffer = value;
     vdp.addr = (vdp.addr + 1) & 0x3FFF;
 }

@@ -19,7 +19,10 @@ typedef struct {
     uint8_t read_buffer;
     uint8_t cram_latch;
     uint8_t line_counter;
+    uint8_t vscroll;                /* register 9, latched at the start of each frame */
     uint16_t line;
+    bool cram_dirty;                /* palette changed since the front end last looked */
+    uint8_t tile_dirty[512];        /* tile pattern changed since it was last decoded */
 } vdp_t;
 
 extern vdp_t vdp;

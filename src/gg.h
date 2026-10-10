@@ -25,6 +25,11 @@ extern gg_t gg;
 
 /* pages[i] points at ROM page i (16 KB each). */
 void gg_init(const uint8_t *const *pages, uint16_t page_count);
-void gg_run_frame(void);
+
+/*
+ * Runs one frame. If screen isn't NULL, the 160x144 picture is drawn there
+ * as palette indices (see render_line), `pitch` bytes per row.
+ */
+void gg_run_frame(uint8_t *screen, uint16_t pitch, uint8_t palette_base);
 
 #endif

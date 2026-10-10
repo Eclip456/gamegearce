@@ -3,18 +3,26 @@
 #include <graphx.h>
 #include <keypadc.h>
 #include <stdio.h>
+#include <sys/lcd.h>
 #include <time.h>
 
 #include "gg.h"
+#include "render.h"
 #include "vdp.h"
 #include "z80.h"
 
-#define COLOR_BG 0x00
-#define COLOR_TEXT 0xFF
-#define COLOR_DIM 0xB5
-#define PALETTE_BASE 64             /* graphx palette entries used for the swatches */
-#define REDRAW_FRAMES 15
+#define BUFFER_BYTES (LCD_WIDTH * LCD_HEIGHT)   /* one 8-bit graphx buffer */
+#define PALETTE_BASE 32             /* Game Gear colors use LCD palette entries 32-63 */
+#define SCREEN_X 80                 /* where the 160x144 picture goes */
+#define SCREEN_Y 40
+#define STATUS_Y 200
+#define STATUS_FRAMES 30
+#define MAX_SKIP 8
 #define GG_FPS_X100 5992            /* NTSC frame rate, 59.92 Hz */
+
+#define COLOR_BLACK 0x00
+#define COLOR_WHITE 0xFF
+#define COLOR_UNUSED 0x01           /* never drawn, so text backgrounds show */
 
 static uint8_t read_buttons(void)
 {
@@ -38,66 +46,73 @@ static uint16_t gg_color(const uint8_t *c)
     return (uint16_t)(((r << 1 | r >> 3) << 10) | ((g << 1 | g >> 3) << 5) | (b << 1 | b >> 3));
 }
 
-static void draw_debug(const rom_info_t *game, uint32_t frames, unsigned speed)
+static void update_palette(void)
+{
+    for (uint8_t i = 0; i < 32; i++)
+        gfx_palette[PALETTE_BASE + i] = gg_color(&vdp.cram[i * 2]);
+    vdp.cram_dirty = false;
+}
+
+static void draw_status(uint32_t frames, unsigned speed, uint8_t skip)
 {
     char line[48];
 
-    gfx_FillScreen(COLOR_BG);
-    gfx_SetTextFGColor(COLOR_TEXT);
-    gfx_PrintStringXY(game->title, 8, 8);
-    gfx_SetTextFGColor(COLOR_DIM);
-    gfx_PrintStringXY("Running - no picture yet (debug view)", 8, 20);
-    gfx_SetTextFGColor(COLOR_TEXT);
-
-    sprintf(line, "Frames: %lu", (unsigned long)frames);
-    gfx_PrintStringXY(line, 8, 44);
-    sprintf(line, "Speed:  %u%% of real Game Gear", speed);
-    gfx_PrintStringXY(line, 8, 56);
-    sprintf(line, "PC %04X  SP %04X  AF %04X%s", z80.pc.w, z80.sp.w, z80.af.w,
-            z80.halted ? "  halt" : "");
-    gfx_PrintStringXY(line, 8, 76);
-    sprintf(line, "Banks %02X %02X %02X  RAM ctl %02X", gg.bank[0], gg.bank[1], gg.bank[2],
-            gg.ram_control);
-    gfx_PrintStringXY(line, 8, 88);
-    sprintf(line, "VDP R0 %02X  R1 %02X  display %s", vdp.reg[0], vdp.reg[1],
-            (vdp.reg[1] & 0x40) ? "on" : "off");
-    gfx_PrintStringXY(line, 8, 100);
-
-    gfx_PrintStringXY("Palette:", 8, 124);
-    for (uint8_t i = 0; i < 32; i++)
-    {
-        gfx_palette[PALETTE_BASE + i] = gg_color(&vdp.cram[i * 2]);
-        gfx_SetColor(PALETTE_BASE + i);
-        gfx_FillRectangle(8 + (i & 15) * 19, 136 + (i >> 4) * 20, 17, 18);
-    }
-
-    gfx_SetTextFGColor(COLOR_DIM);
-    gfx_PrintStringXY("arrows d-pad  2nd/alpha 1/2  mode start", 8, 214);
-    gfx_PrintStringXY("[clear] quit", 8, 226);
-    gfx_SwapDraw();
+    sprintf(line, "Frame %lu   Speed %u%%   Draw 1/%u   ", (unsigned long)frames, speed, skip);
+    gfx_PrintStringXY(line, 8, STATUS_Y);
 }
 
 void emu_run(const rom_info_t *game, const uint8_t *const pages[])
 {
-    clock_t start;
+    uint8_t *screen, *picture;
+    uint8_t old_fg, old_bg, old_transparent;
+    uint8_t skip = 1, held = 0;
     uint32_t frames_at_start = 0;
-    unsigned speed = 0;
+    clock_t start;
+
+    /*
+     * Draw straight to the visible screen. graphx's other buffer is free
+     * while the game runs, so the decoded tile cache lives there.
+     */
+    gfx_SetDrawScreen();
+    screen = (uint8_t *)lcd_UpBase;
+    render_tile_cache = (screen == (uint8_t *)lcd_Ram) ? screen + BUFFER_BYTES : (uint8_t *)lcd_Ram;
+    picture = screen + SCREEN_Y * LCD_WIDTH + SCREEN_X;
+
+    gfx_FillScreen(COLOR_BLACK);
+    old_fg = gfx_SetTextFGColor(COLOR_WHITE);
+    old_bg = gfx_SetTextBGColor(COLOR_BLACK);
+    old_transparent = gfx_SetTextTransparentColor(COLOR_UNUSED);
+    gfx_PrintStringXY(game->title, 8, 8);
+    gfx_PrintStringXY("2nd/alpha 1/2  mode start  +/- draw rate", 8, 216);
+    gfx_PrintStringXY("[clear] quit", 8, 228);
 
     gg_init(pages, game->page_count);
     start = clock();
 
     for (;;)
     {
+        uint8_t keys;
+
         gg.buttons = read_buttons();
         if (kb_IsDown(kb_KeyClear))
             break;
 
-        gg_run_frame();
+        /* +/- change how many frames run per frame drawn, once per press. */
+        keys = (kb_IsDown(kb_KeyAdd) ? 1 : 0) | (kb_IsDown(kb_KeySub) ? 2 : 0);
+        if ((keys & 1) && !(held & 1) && skip < MAX_SKIP)
+            skip++;
+        if ((keys & 2) && !(held & 2) && skip > 1)
+            skip--;
+        held = keys;
 
-        if (gg.frames % REDRAW_FRAMES == 0)
+        if (vdp.cram_dirty)
+            update_palette();
+        gg_run_frame(gg.frames % skip == 0 ? picture : NULL, LCD_WIDTH, PALETTE_BASE);
+
+        if (gg.frames % STATUS_FRAMES == 0)
         {
-            clock_t now = clock();
-            unsigned long ticks = now - start;
+            unsigned long ticks = clock() - start;
+            unsigned speed = 0;
 
             /* Emulated frames per second (x100), then as a percentage of 59.92. */
             if (ticks)
@@ -105,9 +120,7 @@ void emu_run(const rom_info_t *game, const uint8_t *const pages[])
                 unsigned long fps_x100 = (gg.frames - frames_at_start) * CLOCKS_PER_SEC * 100UL / ticks;
                 speed = (unsigned)(fps_x100 * 100UL / GG_FPS_X100);
             }
-            draw_debug(game, gg.frames, speed);
-
-            /* Restart the clock after drawing so the speed counts emulation only. */
+            draw_status(gg.frames, speed, skip);
             start = clock();
             frames_at_start = gg.frames;
         }
@@ -117,4 +130,10 @@ void emu_run(const rom_info_t *game, const uint8_t *const pages[])
     do
         kb_Scan();
     while (kb_IsDown(kb_KeyClear));
+
+    gfx_SetTextFGColor(old_fg);
+    gfx_SetTextBGColor(old_bg);
+    gfx_SetTextTransparentColor(old_transparent);
+    gfx_SetDefaultPalette(gfx_8bpp);
+    gfx_SetDrawBuffer();
 }

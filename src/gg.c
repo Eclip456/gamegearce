@@ -2,6 +2,7 @@
 
 #include <string.h>
 
+#include "render.h"
 #include "vdp.h"
 #include "z80.h"
 
@@ -147,13 +148,18 @@ void gg_init(const uint8_t *const *pages, uint16_t page_count)
     z80_reset();
 }
 
-void gg_run_frame(void)
+void gg_run_frame(uint8_t *screen, uint16_t pitch, uint8_t palette_base)
 {
     for (uint16_t line = 0; line < VDP_LINES; line++)
     {
         int budget = GG_CYCLES_PER_LINE - cycle_debt;
 
         vdp_start_line(line);
+        if (screen && line >= GG_FIRST_LINE && line < GG_FIRST_LINE + GG_HEIGHT)
+        {
+            render_line((uint8_t)(line - GG_FIRST_LINE), screen, palette_base);
+            screen += pitch;
+        }
         update_irq();
         cycle_debt = z80_run(budget) - budget;
     }

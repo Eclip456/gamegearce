@@ -6,9 +6,8 @@
 #include "rom.h"
 
 /*
- * Runs a game until [clear] is pressed. There is no picture yet: the screen
- * shows a debug view (frame count, speed, CPU state, palette) that proves
- * the game's code is running.
+ * Runs a game until [clear] is pressed, drawing its 160x144 picture in the
+ * middle of the screen with a status line (frame count, speed) below.
  */
 void emu_run(const rom_info_t *game, const uint8_t *const pages[]);
 
