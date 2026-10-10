@@ -2,6 +2,8 @@
 
 z80_t z80;
 z80_window_t z80_rmap[256];
+z80_window_t z80_wmap[256];
+z80_window_t z80_cmap[8];
 
 #define FC 0x01
 #define FN 0x02
@@ -25,6 +27,7 @@ z80_window_t z80_rmap[256];
 #define SP z80.sp.w
 #define PC z80.pc.w
 
+#ifndef Z80_ASM
 /* Base cycle counts for unprefixed opcodes; taken branches add more below. */
 static const uint8_t cycles_main[256] = {
      4,10, 7, 6, 4, 4, 7, 4, 4,11, 7, 6, 4, 4, 7, 4,
@@ -44,6 +47,7 @@ static const uint8_t cycles_main[256] = {
      5,10,10,19,10,11, 7,11, 5, 4,10, 4,10, 0, 7,11,
      5,10,10, 4,10,11, 7,11, 5, 6,10, 4,10, 0, 7,11,
 };
+#endif
 
 /*
  * Lookup tables, filled by z80_reset. The eZ80 has no barrel shifter, so C
@@ -55,9 +59,11 @@ static uint8_t op_y[256];           /* opcode bits 5-3 */
 static uint8_t op_p[256];           /* opcode bits 5-4 (register pair) */
 static uint8_t inc_flags[256];      /* flags after INC, by result (carry kept separately) */
 static uint8_t dec_flags[256];      /* flags after DEC, by result */
-static const uint8_t bit_mask[8] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80 };
 
+#ifndef Z80_ASM
+static const uint8_t bit_mask[8] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80 };
 static int cycles_extra;            /* added by taken branches and (IX+d) */
+#endif
 
 static inline uint8_t rd(uint16_t addr)
 {
@@ -82,6 +88,7 @@ static inline void wr16(uint16_t addr, uint16_t value)
     z80_mem_write((uint16_t)(addr + 1), v.b.h);
 }
 
+#ifndef Z80_ASM
 static inline uint8_t fetch(void)
 {
     uint8_t v = z80_rmap[z80.pc.b.h].p[z80.pc.b.l];
@@ -104,6 +111,7 @@ static inline uint8_t hi8(uint16_t value)
     v.w = value;
     return v.b.h;
 }
+#endif
 
 static inline uint16_t make16(uint8_t h, uint8_t l)
 {
@@ -119,17 +127,21 @@ static inline void push(uint16_t v)
     wr16(SP, v);
 }
 
+#ifndef Z80_ASM
 static inline uint16_t pop(void)
 {
     uint16_t v = rd16(SP);
     SP += 2;
     return v;
 }
+#endif
 
 static inline void bump_r(void)
 {
     z80.r = (z80.r & 0x80) | ((z80.r + 1) & 0x7F);
 }
+
+#ifndef Z80_ASM     /* the calculator build runs src/z80core.s instead */
 
 /* ---- arithmetic ---- */
 
@@ -758,6 +770,8 @@ static int exec_main(uint8_t op, z80_pair_t *ip)
     return cycles_main[op] + cycles_extra;
 }
 
+#endif
+
 static int interrupt(void)
 {
     z80.halted = false;
@@ -796,6 +810,37 @@ void z80_reset(void)
     z80.halted = z80.ei_pending = z80.irq_line = false;
 }
 
+#ifdef Z80_ASM
+int z80_run_asm(int cycles);
+
+/*
+ * The assembly core handles instructions; interrupts and HALT stay here.
+ * It checks its cycle count with an 8-bit test, so runs stay under 256.
+ */
+int z80_run(int cycles)
+{
+    int done = 0;
+
+    while (done < cycles)
+    {
+        int chunk;
+
+        if (z80.irq_line && z80.iff1 && !z80.ei_pending)
+            done += interrupt();
+        if (z80.halted)
+        {
+            done += (cycles - done + 3) & ~3;
+            break;
+        }
+        z80.ei_pending = false;
+        chunk = cycles - done;
+        if (chunk > 255)
+            chunk = 255;
+        done += z80_run_asm(chunk);
+    }
+    return done;
+}
+#else
 int z80_run(int cycles)
 {
     int done = 0;
@@ -816,3 +861,4 @@ int z80_run(int cycles)
     }
     return done;
 }
+#endif

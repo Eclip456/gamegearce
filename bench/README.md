@@ -6,7 +6,8 @@ with the calculator's hardware timer, and `cemu/run` runs it in
 [CEmu](https://github.com/CE-Programming/CEmu)'s core with no TI OS (the flash
 is filled with `RET`, so the program's few OS calls return at once).
 
-On a real calculator the C core measured 5% in GGCE; this benchmark gives 4.6%.
+On a real calculator the C core measured 5% in GGCE; this benchmark gave 4.6% for it.
+The benchmark now runs the assembly core (`src/z80core.s`): 24%.
 
 ```sh
 python3 cemu/embed.py path/to/zexdoc.com     # writes src/workload.h

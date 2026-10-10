@@ -2,18 +2,15 @@
 # Makefile Options
 # ----------------------------
 
-NAME = GGBENCH
-DESCRIPTION = "GGCE CPU benchmark"
+NAME = GGCPU
+DESCRIPTION = "GGCE CPU core test"
 COMPRESSED = NO
 ARCHIVED = NO
 
 CFLAGS = -Wall -Wextra -Oz -DZ80_ASM
 CXXFLAGS = -Wall -Wextra -Oz -DZ80_ASM
-EXTRA_ASMSOURCES = ../src/z80core.s
+EXTRA_ASMSOURCES = ../../src/z80core.s
 
 # ----------------------------
 
 include $(shell cedev-config --makefile)
-
-# The benchmark runs ZEXDOC, which isn't stored in this repository.
-# Generate src/workload.h first:  python3 cemu/embed.py path/to/zexdoc.com

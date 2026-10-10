@@ -1,5 +1,6 @@
 #include "emu.h"
 
+#include <fileioc.h>
 #include <graphx.h>
 #include <keypadc.h>
 #include <stdio.h>
@@ -23,6 +24,7 @@
 #define COLOR_BLACK 0x00
 #define COLOR_WHITE 0xFF
 #define COLOR_UNUSED 0x01           /* never drawn, so text backgrounds show */
+#define CODE_VAR "GGCECODE"         /* temporary RAM AppVar holding the code buffer */
 
 static uint8_t read_buttons(void)
 {
@@ -61,13 +63,62 @@ static void draw_status(uint32_t frames, unsigned speed, uint8_t skip)
     gfx_PrintStringXY(line, 8, STATUS_Y);
 }
 
+/*
+ * The CPU core runs game code from a RAM copy of the ROM slots
+ * (GG_CODE_BUFFER_SIZE bytes). It lives in a temporary AppVar so the OS
+ * accounts for the RAM; NULL if there isn't enough free.
+ */
+static uint8_t *alloc_code_buffer(void)
+{
+    uint8_t *buffer = NULL;
+    uint8_t handle;
+
+    ti_Delete(CODE_VAR);            /* left over if the calculator reset mid-game */
+    handle = ti_Open(CODE_VAR, "w");
+    if (!handle)
+        return NULL;
+    if (ti_Resize(GG_CODE_BUFFER_SIZE, handle) > 0)
+        buffer = ti_GetDataPtr(handle);
+    ti_Close(handle);
+    if (!buffer)
+        ti_Delete(CODE_VAR);
+    return buffer;
+}
+
+static void wait_for_key(void)
+{
+    do
+        kb_Scan();
+    while (kb_AnyKey());
+    do
+        kb_Scan();
+    while (!kb_AnyKey());
+    do
+        kb_Scan();
+    while (kb_AnyKey());
+}
+
 void emu_run(const rom_info_t *game, const uint8_t *const pages[])
 {
-    uint8_t *screen, *picture;
+    uint8_t *screen, *picture, *code_buffer;
     uint8_t old_fg, old_bg, old_transparent;
     uint8_t skip = 1, held = 0;
     uint32_t frames_at_start = 0;
     clock_t start;
+
+    code_buffer = alloc_code_buffer();
+    if (!code_buffer)
+    {
+        gfx_FillScreen(COLOR_BLACK);
+        gfx_SetTextFGColor(COLOR_WHITE);
+        gfx_PrintStringXY("Not enough free RAM to run the game.", 8, 56);
+        gfx_PrintStringXY("It needs 48 KB: archive or delete", 8, 70);
+        gfx_PrintStringXY("programs and variables in RAM.", 8, 84);
+        gfx_PrintStringXY("Press any key", 8, 228);
+        gfx_SwapDraw();
+        wait_for_key();
+        return;
+    }
 
     /*
      * Draw straight to the visible screen. graphx's other buffer is free
@@ -86,7 +137,7 @@ void emu_run(const rom_info_t *game, const uint8_t *const pages[])
     gfx_PrintStringXY("2nd/alpha 1/2  mode start  +/- draw rate", 8, 216);
     gfx_PrintStringXY("[clear] quit", 8, 228);
 
-    gg_init(pages, game->page_count);
+    gg_init(pages, game->page_count, code_buffer);
     start = clock();
 
     for (;;)
@@ -136,4 +187,5 @@ void emu_run(const rom_info_t *game, const uint8_t *const pages[])
     gfx_SetTextTransparentColor(old_transparent);
     gfx_SetDefaultPalette(gfx_8bpp);
     gfx_SetDrawBuffer();
+    ti_Delete(CODE_VAR);
 }

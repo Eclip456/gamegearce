@@ -7,7 +7,7 @@ CC ?= cc
 CFLAGS ?= -O2 -Wall -Wextra
 CPPFLAGS += -I../src
 
-all: zex ggtest rendertest
+all: zex ggtest rendertest cputest
 
 zex: zex.c ../src/z80.c ../src/z80.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ zex.c ../src/z80.c
@@ -18,11 +18,14 @@ ggtest: ggtest.c ../src/gg.c ../src/vdp.c ../src/z80.c ../src/render.c ../src/*.
 rendertest: rendertest.c ../src/render.c ../src/vdp.c ../src/*.h
 	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ rendertest.c ../src/render.c ../src/vdp.c
 
+cputest: cputest.c ../src/z80.c ../src/z80.h
+	$(CC) $(CPPFLAGS) $(CFLAGS) -o $@ cputest.c ../src/z80.c
+
 check: ggtest rendertest
 	./ggtest
 	./rendertest
 
 clean:
-	rm -f zex ggtest rendertest
+	rm -f zex ggtest rendertest cputest
 
 .PHONY: all check clean

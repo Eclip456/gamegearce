@@ -23,8 +23,13 @@ typedef struct {
 
 extern gg_t gg;
 
-/* pages[i] points at ROM page i (16 KB each). */
-void gg_init(const uint8_t *const *pages, uint16_t page_count);
+#define GG_CODE_BUFFER_SIZE (0xC000 + 4)
+
+/*
+ * pages[i] points at ROM page i (16 KB each). The assembly CPU core needs
+ * GG_CODE_BUFFER_SIZE bytes of RAM in code_buffer; the C core passes NULL.
+ */
+void gg_init(const uint8_t *const *pages, uint16_t page_count, uint8_t *code_buffer);
 
 /*
  * Runs one frame. If screen isn't NULL, the 160x144 picture is drawn there

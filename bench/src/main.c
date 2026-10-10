@@ -33,6 +33,12 @@ void z80_io_write(uint16_t port, uint8_t value)
     (void)value;                    /* console output is ignored */
 }
 
+const uint8_t *z80_code_base(uint16_t addr)
+{
+    (void)addr;
+    return Z80_MEMORY;
+}
+
 int main(void)
 {
     uint8_t *mem = Z80_MEMORY;
@@ -45,7 +51,9 @@ int main(void)
     mem[5] = 0xC3; mem[6] = BDOS & 0xFF; mem[7] = BDOS >> 8;
     mem[BDOS] = 0xD3; mem[BDOS + 1] = 0x00; mem[BDOS + 2] = 0xC9;
     for (unsigned i = 0; i < 256; i++)
-        z80_rmap[i].p = mem + i * 0x100;
+        z80_rmap[i].p = z80_wmap[i].p = mem + i * 0x100;
+    for (unsigned i = 0; i < 8; i++)
+        z80_cmap[i].p = mem;
 
     z80_reset();
     z80.pc.w = 0x100;

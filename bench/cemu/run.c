@@ -1,9 +1,10 @@
 /*
  * Runs a CE program with no TI OS in CEmu's core: the flash is all RET
- * instructions, so the program's few OS calls return at once. Built for
- * bench/GGBENCH.8xp, which reports its result at BENCH_RESULT.
+ * instructions, so the program's few OS calls return at once.
  *
- *   ./run ../bin/GGBENCH.8xp
+ *   ./run ../bin/GGBENCH.8xp                  prints the benchmark result
+ *   ./run -d out.bin ../../tests/calc/bin/GGCPU.8xp
+ *                                             saves the CPU test's results
  *
  * Build with CEMU_DIR pointing at a CEmu checkout (see Makefile).
  */
@@ -21,6 +22,8 @@
 #define STACK_TOP 0xD1A87E
 #define SENTINEL 0xD3FF00           /* JR $ : where main returns to */
 #define BENCH_RESULT 0xD60000
+#define DUMP_ADDR 0xD52000          /* tests/cputest.c's RESULTS */
+#define DUMP_SIZE (7 * 256 * 4)
 #define GG_CLOCK 3579545.0
 #define TIMER_HZ 32768.0
 
@@ -87,17 +90,30 @@ int main(int argc, char **argv)
     uint8_t *program, *ram;
     size_t len;
     uint32_t *result;
+    const char *dump_path = NULL;
+    int limit_ms = getenv("RUN_LIMIT_MS") ? atoi(getenv("RUN_LIMIT_MS")) : 600000;
     int fd, ms;
 
-    if (argc > 2 && !strcmp(argv[1], "-v"))
+    for (;;)
     {
-        verbose = 1;
-        argv++;
-        argc--;
+        if (argc > 2 && !strcmp(argv[1], "-v"))
+        {
+            verbose = 1;
+            argv++;
+            argc--;
+        }
+        else if (argc > 3 && !strcmp(argv[1], "-d"))
+        {
+            dump_path = argv[2];
+            argv += 2;
+            argc -= 2;
+        }
+        else
+            break;
     }
     if (argc != 2)
     {
-        fprintf(stderr, "usage: %s [-v] program.8xp\n", argv[0]);
+        fprintf(stderr, "usage: %s [-v] [-d results.bin] program.8xp\n", argv[0]);
         return 2;
     }
     program = load_program(argv[1], &len);
@@ -128,6 +144,7 @@ int main(int argc, char **argv)
     ram[1] = (SENTINEL >> 8) & 0xFF;
     ram[2] = SENTINEL >> 16;
     memset(phys_mem_ptr(BENCH_RESULT, 16), 0, 16);
+    memset(phys_mem_ptr(DUMP_ADDR, 4), 0, 4);
 
     cpu.IEF1 = cpu.IEF2 = 0;
     cpu.ADL = cpu.L = cpu.IL = 1;
@@ -137,13 +154,41 @@ int main(int argc, char **argv)
     cpu_flush(cpu.registers.PC, 1);
 
     emu_set_run_rate(1000);
-    for (ms = 0; ms < 600000 && cpu.registers.PC != SENTINEL; ms += 100)
+    for (ms = 0; ms < limit_ms && cpu.registers.PC != SENTINEL; ms += 100)
         emu_run(100);
 
-    result = phys_mem_ptr(BENCH_RESULT, 16);
-    if (cpu.registers.PC != SENTINEL || result[0] != 0x4243484D)
+    if (cpu.registers.PC != SENTINEL)
     {
+        uint8_t *progress = phys_mem_ptr(0xD51FF0, 3);
         fprintf(stderr, "program did not finish (PC %06X after %d ms)\n", cpu.registers.PC, ms);
+        if (dump_path)
+            fprintf(stderr, "CPU test was at group %u, opcode %02X, state %u\n",
+                    progress[0], progress[1], progress[2]);
+        return 1;
+    }
+    /* Tests can leave a text report: "TEXT" followed by a NUL-terminated string. */
+    if (!memcmp(phys_mem_ptr(DUMP_ADDR, 4), "TEXT", 4))
+    {
+        const char *text = phys_mem_ptr(DUMP_ADDR + 4, 4096);
+        fputs(text, stdout);
+        return strstr(text, "FAILED") ? 1 : 0;
+    }
+    if (dump_path)
+    {
+        FILE *f = fopen(dump_path, "wb");
+        if (!f || fwrite(phys_mem_ptr(DUMP_ADDR, DUMP_SIZE), 1, DUMP_SIZE, f) != DUMP_SIZE)
+        {
+            perror(dump_path);
+            return 1;
+        }
+        fclose(f);
+        printf("finished after %d ms of calculator time; results in %s\n", ms, dump_path);
+        return 0;
+    }
+    result = phys_mem_ptr(BENCH_RESULT, 16);
+    if (result[0] != 0x4243484D)
+    {
+        fprintf(stderr, "program finished without a benchmark result\n");
         return 1;
     }
     printf("Z80 cycles %u, timer ticks %u, emulated PC %04X\n", result[1], result[2], result[3]);
